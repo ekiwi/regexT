@@ -1,0 +1,5 @@
+# Compiler Python
+*.pyc
+
+# PDF Test files
+pdf/
