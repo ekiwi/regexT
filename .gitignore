@@ -5,3 +5,6 @@
 pdf/
 # Test Text Output
 txt/
+
+# gedit backups
+*~
