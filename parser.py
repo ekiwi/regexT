@@ -36,13 +36,20 @@ class Parser():
 			self.log = Logger()
 		else:
 			self.log = logger
+		self.max_line_width = 2
+		self.y_offset = 0 # offset on extended page
+		"""
+		The derrived, document specific parsers will operate
+		on this lists that will contain all elements found on an
+		"extended page" in increasing x0 order.
+		"""
 		self.boxes = []
 		self.texts = []
 		self.lines = []
 		self.hLines = []
 		self.vLines = []
 		self.rectangles = []
-		self.max_line_width = 2
+
 
 	def parse(self, file_name):
 		"""
@@ -63,31 +70,67 @@ class Parser():
 		interpreter = PDFPageInterpreter(rsrcmgr, device)
 
 		for n, page in enumerate(doc.get_pages()):
+			self.log.debug("Page #%s, mediabox=%s, cropbox=%s" % (n, page.mediabox, page.cropbox))
 			interpreter.process_page(page)
 			layout = device.get_result()
-			self._parsePage(layout)
+			boxes = self._parsePage(layout, page.cropbox[3])
+			self._processPage(boxes, page.cropbox[3])
 		fp.close()
 
-	def _parsePage(self, layout):
+	def _parsePage(self, layout, cropbox_height):
+		boxes = []
 		objstack = list(reversed(layout._objs))
 		while objstack:
 			b = objstack.pop()
 			if type(b) in [LTFigure, LTTextBox, LTTextLine, LTTextBoxHorizontal]:
 				objstack.extend(reversed(b._objs))  # put contents of aggregate object into stack
 			elif type(b) in [LTTextLineHorizontal, LTRect, LTLine]:
-				box = Box(b)
-				self.boxes.append(box)
-				if box.isText():
-					self.texts.append(box)
-				if box.isLine(self.max_line_width):
-					self.lines.append(box)
-				if box.isHorizontalLine(self.max_line_width):
-					self.hLines.append(box)
-				if box.isVerticalLine(self.max_line_width):
-					self.vLines.append(box)
-				if box.isRectangle(self.max_line_width):
-					self.rectangles.append(box)
-				self.log.debug(str(box))
+				boxes.append(Box(b, cropbox_height))
+		return boxes
+
+	def _processPage(self, boxes, page_height):
+		"""processPage
+		"""
+		boxes = sorted(boxes, key=lambda box: box.y0)
+		for box in boxes:
+			if self._checkEndContent(box):
+				self._processContent()
+				#TODO: Add box before or after process Content?
+				self.y_offset = 0
+				# reset lists
+				self.boxes = []
+				self.texts = []
+				self.lines = []
+				self.hLines = []
+				self.vLines = []
+				self.rectangles = []
+			box.moveY(self.y_offset)
+			self.boxes.append(box)
+			if box.isText():
+				self.texts.append(box)
+			if box.isLine(self.max_line_width):
+				self.lines.append(box)
+			if box.isHorizontalLine(self.max_line_width):
+				self.hLines.append(box)
+			if box.isVerticalLine(self.max_line_width):
+				self.vLines.append(box)
+			if box.isRectangle(self.max_line_width):
+				self.rectangles.append(box)
+			self.log.debug(str(box))
+
+	def _checkEndContent(self, box):
+		"""_checkEndContent
+		returns true if end of content that will be parsed in one go is reached
+		"""
+		self.log.error("_checkEndContent needs to be overridden by derived class")
+		return False
+
+	def _processContent(self):
+		"""_processContent
+		process accumulated content
+		needs to be overridden by derived class
+		"""
+		self.log.error("_processContent needs to be overridden by derived class")
 
 
 class Box():
@@ -98,13 +141,16 @@ class Box():
 
 	OBJECTS = [LTRect, LTLine, LTTextLineHorizontal]
 
-	def __init__(self, obj):
+	def __init__(self, obj, cropbox_height):
+		"""
+		the cropbox_height is needed in order to transform the y coordinates
+		"""
 		if type(obj) not in self.OBJECTS:
 			assert False, "Box can only be created from %s" % self.OBJECTS
 		self.x0 = obj.x0
 		self.x1 = obj.x1
-		self.y0 = obj.y0
-		self.y1 = obj.y1
+		self.y0 = cropbox_height - obj.y0
+		self.y1 = cropbox_height - obj.y1
 		self.text = None
 		if type(obj) == LTTextLineHorizontal:
 			self.text = obj.get_text()
@@ -146,6 +192,14 @@ class Box():
 
 	def isText(self):
 		return self.text != None
+
+	def moveX(self, x):
+		self.x0 += x
+		self.x1 += x
+
+	def moveY(self, y):
+		self.y0 += y
+		self.y1 += y
 
 	def __unicode__(self):
 		s = "@(%.2f,%.2f)->(%.2f,%.2f)" % (self.x0, self.y0, self.x1, self.y1)
