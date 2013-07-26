@@ -37,6 +37,7 @@ class Parser():
 			self.log = Logger()
 		else:
 			self.log = logger
+		self.laparams = LAParams()	# can be modified in the child class constructor
 		self.max_line_width = 2
 		self.y_offset = 0 # offset on section page
 		self.in_section = False
@@ -62,12 +63,11 @@ class Parser():
 
 		doc.initialize("")
 		rsrcmgr = PDFResourceManager()
-		laparams = LAParams()
-		device = PDFPageAggregator(rsrcmgr, laparams=laparams)
+		device = PDFPageAggregator(rsrcmgr, laparams=self.laparams)
 		interpreter = PDFPageInterpreter(rsrcmgr, device)
 
 		for n, page in enumerate(doc.get_pages()):
-			self.log.debug("Page #%s, mediabox=%s, cropbox=%s" % (n, page.mediabox, page.cropbox))
+			# self.log.debug("Page #%s, mediabox=%s, cropbox=%s" % (n, page.mediabox, page.cropbox))
 			interpreter.process_page(page)
 			layout = device.get_result()
 			boxes = self._parsePageContent(layout, page.cropbox[3])
@@ -77,7 +77,7 @@ class Parser():
 		# done with parsing
 		# still in section ?
 		if self.in_section:
-			self.log.debug("------- Section End -------")
+			# self.log.debug("------- Section End -------")
 			self._processSection()
 
 	def _parsePageContent(self, layout, cropbox_height):
@@ -88,7 +88,7 @@ class Parser():
 			if type(b) in [LTFigure, LTTextBox, LTTextLine, LTTextBoxHorizontal]:
 				objstack.extend(reversed(b._objs))  # put contents of aggregate object into stack
 			elif type(b) in [LTTextLineHorizontal, LTRect, LTLine]:
-				boxes.append(Box(b, cropbox_height))
+				boxes.append(Box.fromPdfObject(b, cropbox_height))
 		return boxes
 
 	def _processPage(self, boxes, page_height):
@@ -108,14 +108,14 @@ class Parser():
 				self.boxes.append(last_box)
 				# self.log.debug(str(last_box))
 				# process section
-				self.log.debug("------- Section End -------")
+				# self.log.debug("------- Section End -------")
 				self._processSection()	# let child class make sense of all this
 				self.y_offset = -box.y1	# start new content from basically zero
 				self.boxes = []			# clear box collection
 				self.in_section = False	# not in a section anymore
 			#
 			if not self.in_section and start:
-				self.log.debug("------- Section Start -------")
+				# self.log.debug("------- Section Start -------")
 				self.in_section = True
 			#
 			if self.in_section:
@@ -147,6 +147,31 @@ class Parser():
 		"""
 		self.log.error("_processSection needs to be overridden by derived class")
 
+	def getObjectsOnHorizontalLine(self, y0):
+		"""getObjectsOnLine
+		returns objects found on horizontal line specified by the top offset
+		"""
+		return [box for box in self.boxes if box.y0 <= y0 and box.y1 >= y0]
+
+	def getObjectsInLineWith(self, box):
+		"""getObjectsInLineWith
+		returns objects that can be found on a horizontal line through th
+		given object (including the given object as long as it is part of
+		the self.boxes member)
+		"""
+		return self.getObjectsOnHorizontalLine(box.y0 + box.height / 2)
+
+	def parseTable(self, lines, text, max_line_width=-1):
+		"""parseTable
+		tries to put text into logical grid markes by lines
+		"""
+		if max_line_width < 0:
+			max_line_width = self.max_line_width
+		xlines = sorted(list(set(line.x0 for line in lines if line.isVerticalLine(max_line_width))))
+		ylines = sorted(list(set(line.y0 for line in lines if line.isHorizontalLine(max_line_width))))
+		
+		self.log.debug("Parsing is hard...")
+
 
 class Box():
 	""" Box
@@ -156,19 +181,30 @@ class Box():
 
 	OBJECTS = [LTRect, LTLine, LTTextLineHorizontal]
 
-	def __init__(self, obj, cropbox_height):
+	def __init__(self, x0, y0, x1, y1, text=None):
+		"""
+		"""
+		self.x0 = x0
+		self.x1 = x1
+		self.y0 = y1
+		self.y1 = y0
+		self.text = text
+
+	@classmethod
+	def fromPdfObject(self, obj, cropbox_height):
 		"""
 		the cropbox_height is needed in order to transform the y coordinates
 		"""
-		if type(obj) not in self.OBJECTS:
-			assert False, "Box can only be created from %s" % self.OBJECTS
-		self.x0 = obj.x0
-		self.x1 = obj.x1
-		self.y0 = cropbox_height - obj.y1
-		self.y1 = cropbox_height - obj.y0
-		self.text = None
+		if type(obj) not in Box.OBJECTS:
+			assert False, "Box can only be created from %s" % Box.OBJECTS
+		x0 = obj.x0
+		x1 = obj.x1
+		y0 = cropbox_height - obj.y1
+		y1 = cropbox_height - obj.y0
+		text = None
 		if type(obj) == LTTextLineHorizontal:
-			self.text = obj.get_text()
+			text = obj.get_text().strip()
+		return Box(x0, y0, x1, y1, text)
 
 	@property
 	def width(self):
@@ -207,6 +243,15 @@ class Box():
 
 	def isText(self):
 		return self.text != None
+
+	def checkWidth(self, width, margin=2):
+		"""checkWidth
+		returns true if the with of this box equals the width within
+		a specific margin
+		"""
+		widthMin = width - float(margin) / 2
+		widthMax = width + float(margin) / 2
+		return self.width >= (widthMin) and self.width <= widthMax
 
 	def moveX(self, x):
 		self.x0 += x
